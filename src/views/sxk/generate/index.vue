@@ -879,7 +879,7 @@
                   class="sxk-generate__edit-body-input"
                   type="textarea"
                   v-model="draftEditingVersion.body"
-                  resize="vertical"
+                  :autosize="{ minRows: 10 }"
                 />
               </div>
               <div v-if="draftEditingVersion.tags?.length" class="sxk-generate__edit-tags">
@@ -1125,8 +1125,7 @@
                 <el-input
                   type="textarea"
                   v-model="v.body"
-                  :autosize="{ minRows: 12, maxRows: 22 }"
-                  resize="vertical"
+                  :autosize="{ minRows: 12 }"
                 />
               </div>
               <div v-if="v.images?.length" class="sxk-generate__img-ref-list">
@@ -1500,7 +1499,7 @@
  * 草稿状态机：stage ∈ draft | editing | adapted | done
  * 持久化：localStorage[`sxk-draft-id-${tabId}`]，每个 Tab 独立，刷新自动恢复
  */
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -1899,39 +1898,43 @@ const canJumpTo = (i) => {
   return i < draftStep.value && currentDraft.value
 }
 
+// 将步骤序号映射为后端 stage 字段值
+const stageValueMap = ['draft', 'editing', 'adapted']
+
 const onStepJump = (i) => {
+  // 点击当前阶段无反应
+  if (i === draftStep.value) return
+
   // 禁用未达成的阶段
   if (i > draftStep.value && !(i === 2 && stage2Completed.value)) {
     ElMessage.info(`请先完成：${stepDefs[draftStep.value].title}`)
     return
   }
+
   // 阶段 2 已完成时不允许再跳回
   if (i === 2 && stage2Completed.value) {
     ElMessage.info('已完成的工作不能修改')
     return
   }
-  // 向前跳（已完成 → 当前）：可点击
+
+  // 向前回退：弹窗确认
   if (i < draftStep.value && currentDraft.value) {
-    // 回退到阶段 0：提示需保存当前编辑
-    if (i === 0) {
-      ElMessageBox.confirm(
-        '回到阶段 1/2 的编辑内容将不会保存，确定继续？',
-        '回到生成初稿',
-        { type: 'warning', confirmButtonText: '确定回到', cancelButtonText: '取消' }
-      )
-        .then(() => {
-          draftStep.value = i
-          ElMessage.info(`已切回：${stepDefs[i].title}`)
-        })
-        .catch(() => {})
-      return
-    }
-    // 阶段 0 → 1 之间回退
-    draftStep.value = i
-    ElMessage.info(`已切回：${stepDefs[i].title}`)
+    const fromTitle = stepDefs[draftStep.value].title
+    const toTitle = stepDefs[i].title
+    ElMessageBox.confirm(
+      `即将从「${fromTitle}」回到「${toTitle}」，当前阶段未保存的内容将丢失，确定继续？`,
+      `回到：${toTitle}`,
+      { type: 'warning', confirmButtonText: '确定回到', cancelButtonText: '取消' }
+    )
+      .then(() => {
+        currentDraft.value.stage = stageValueMap[i]
+        // 重置阶段 2 完成标记（仅在回退到阶段 0 或 1 时）
+        if (i < 2) stage2Completed.value = false
+        ElMessage.success(`已回到：${toTitle}`)
+      })
+      .catch(() => {})
     return
   }
-  // 点击当前阶段无反应
 }
 
 const confirmDiscard = () => {
@@ -2058,12 +2061,8 @@ const stepTitle = computed(() => {
   return ['生成初稿', '编辑与渠道适配', '配图与保存'][draftStep.value]
 })
 
-// el-card 整体样式：用 calc 锁死高度（不依赖父级传递，最稳）
-// element-plus el-card 默认 { display: flex; flex-direction: column; overflow: hidden }
-// el-card__body 默认 { flex-grow: 1; overflow: auto }
-// 锁死 el-card 高度后：body 自动撑满 + 滚动，footer 自动在底部
+// el-card 样式：不锁死高度，让内容自然撑开，页面整体滚动
 const cardScrollStyle = computed(() => ({
-  height: 'calc(100vh - 200px)',  // 浏览器高度 - 顶部(100) - 右栏头(60) - 底部留白(40)
   display: 'flex',
   flexDirection: 'column'
 }))
@@ -2215,6 +2214,11 @@ onMounted(async () => {
       if (tid) await onTemplateChange(String(tid))
     }
   }
+})
+
+// keep-alive 重新激活时，刷新场景 schema（用户可能在其他 Tab 修改了动态参数名称）
+onActivated(async () => {
+  await loadSceneSchemas()
 })
 
 onBeforeUnmount(() => {
@@ -2815,14 +2819,13 @@ void renderMarkdown
   display: flex;
   flex-direction: column;
   width: 100% !important;
-  height: 100% !important; // 关键：撑满父级 .avue-view 高度
+  min-height: 100% !important; // 不锁死高度，内容自然撑开
   max-width: 100% !important;
   margin: 0 !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
   box-sizing: border-box;
   position: relative;
-  overflow: hidden; // 关键：禁止任何方向溢出（避免横向滚动条）
   // 关键：内部用 flex 嵌套实现横向排列
   & > .sxk-page-welcome,
   & > .sxk-generate__body {
@@ -2834,15 +2837,14 @@ void renderMarkdown
     flex-direction: row;
     align-items: center;
     margin-bottom: 12px;
-    flex-shrink: 0; // 关键：welcome 不被压缩
+    flex-shrink: 0;
   }
   & > .sxk-generate__body {
     flex-direction: row;
     gap: 12px;
-    align-items: stretch;
-    flex: 1 1 auto !important; // 关键：body 撑满剩余高度
+    align-items: flex-start; // 不拉伸，让内容决定高度
+    flex: 1 1 auto !important;
     height: auto !important;
-    min-height: 0; // 关键：允许内容滚动
   }
 }
 
@@ -2858,34 +2860,26 @@ void renderMarkdown
   width: 100% !important; // 关键：撑满父容器宽度
   box-sizing: border-box; // 关键：避免 padding 撑大
   // display 和 gap 由 .sxk-generate 的子选择器接管
-  overflow: hidden;
 
   @media (max-width: 1100px) {
     flex-direction: column;
-    overflow: visible;
   }
 }
 
-// ---------- 左栏：生成配置 + 阶段指示（全宽撑满 + 固定高度 + 内部滚动） ----------
+// ---------- 左栏：生成配置 + 阶段指示（全宽撑满，内容自然展开） ----------
 .sxk-generate__config {
   // 关键：默认全宽撑满（首次访问无草稿时）
   flex: 1 1 auto;
   width: 100%;
   max-width: 100%;
-  // 关键：撑满父容器高度（让内部可滚动）
   display: flex;
   flex-direction: column;
-  align-self: stretch;
-  // 固定高度 = 父级（动态跟随浏览器尺寸变化）
-  height: 100% !important; // 关键：撑满父级 body 高度
-  min-height: 0;
-  overflow: hidden; // 关键：禁止横向溢出
+  align-self: flex-start;
 
   // 关键：当父级是 .sxk-generate__body（有右栏兄弟）时，左栏占 50%
   .sxk-generate__body > & {
-    flex: 1 1 0% !important; // 关键：flex row 中各占 1 等分
+    flex: 1 1 0% !important;
     width: 50% !important;
-    height: 100% !important; // 关键：撑满父级 body 高度
     min-width: 0;
   }
 
@@ -2930,38 +2924,21 @@ void renderMarkdown
     line-height: 1.4;
   }
 
-  // 让 basic-block 自身撑满
+  // 让 basic-block 自然展开
   :deep(.basic-block) {
     display: flex;
     flex-direction: column;
-    height: 100%;
-    min-height: 0;
   }
   :deep(.basic-block__body) {
     display: flex;
     flex-direction: column;
     flex: 1 1 0%;
-    min-height: 0;
   }
-  // 关键：basic-block__body 内的 el-form 撑满 + 独立滚动
+  // basic-block__body 内的 el-form 自然展开
   :deep(.basic-block__body) > .el-form {
     flex: 1 1 0%;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
     // 滚动条与文字保持距离
     padding-right: 20px;
-    // 自定义滚动条（10px 深色）
-    &::-webkit-scrollbar {
-      width: 10px;
-      background-color: rgba(0, 0, 0, 0.04);
-    }
-    &::-webkit-scrollbar-thumb {
-      background: $text-placeholder;
-      border-radius: 5px;
-      border: 2px solid transparent;
-      background-clip: padding-box;
-    }
   }
   @media (max-width: 1100px) {
     max-width: 100%;
@@ -3844,51 +3821,28 @@ void renderMarkdown
 
 // ---------- 右栏：主区域 ----------
 .sxk-generate__main {
-  flex: 1 1 0% !important; // 关键：与 config 等分
+  flex: 1 1 0% !important;
   width: 50% !important;
-  min-width: 0;  // 关键：允许缩小
-  height: 100% !important; // 关键：撑满父级 body 高度
+  min-width: 0;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  align-self: stretch;
-  overflow: hidden; // 关键：禁止横向溢出（避免出现横向滚动条）
-  // 减少 basic-block 内边距：让卡片与页面底部更紧凑
+  align-self: flex-start;
+  // 减少 basic-block 内边距
   :deep(.basic-block) {
-    padding: $spacing-md $spacing-lg $spacing-sm; // 上 16 / 左右 24 / 下 8
-    height: 100%; // 关键：撑满 .sxk-generate__main 父容器
+    padding: $spacing-md $spacing-lg $spacing-sm;
   }
-  // basic-block 内部 __body 撑满
+  // basic-block 内部 __body 自然展开
   :deep(.basic-block__body) {
     display: flex;
     flex-direction: column;
     flex: 1;
-    min-height: 0;
-    overflow-y: auto; // 关键：内容超出时纵向滚动
-    overflow-x: hidden; // 关键：禁止横向滚动
-    // 美化滚动条
-    &::-webkit-scrollbar { width: 8px; }
-    &::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
-    &::-webkit-scrollbar-track { background: transparent; }
   }
-  // 关键：basic-block__body 内的 el-form 撑满 + 独立滚动（初始页面）
   :deep(.basic-block__body) > .el-form {
     flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    // 美化滚动条
-    &::-webkit-scrollbar { width: 8px; }
-    &::-webkit-scrollbar-thumb {
-      background: $text-placeholder;
-      border-radius: $radius-sm;
-    }
-    &::-webkit-scrollbar-track { background: rgba(0,0,0,0.04); }
   }
-  // 引导卡片（无 currentDraft）时，也支持滚动
   :deep(.basic-block__body) > .sxk-generate__guide {
     flex: 1 1 auto;
-    overflow-y: auto;
-    &::-webkit-scrollbar { width: 8px; }
   }
 }
 
@@ -4031,25 +3985,18 @@ void renderMarkdown
 .sxk-generate__stage {
   display: flex;
   flex-direction: column;
-  flex: 1; // 占满 main 剩余高度
-  min-height: 0; // 关键：flex 子项可滚动
+  flex: 1;
   gap: $spacing-md;
-  // 阶段顶部加视觉分隔（让用户知道进入了新阶段）
   padding-top: 4px;
 }
 
-// 阶段 0 行布局：左 Agent 链路（窄/竖向） + 右 初稿对比（主区）
-// 两栏卡片占满父容器高度（动态跟随浏览器尺寸）
-// ★ 阶段 1（编辑与渠道适配）共用此布局：左侧编辑内容 + 右侧发布渠道
+// 阶段 0/1 行布局：左 Agent 链路（窄/竖向） + 右 初稿对比（主区）
+// 两栏卡片内容自然展开，不锁死高度
 .sxk-generate__stage0-row,
 .sxk-generate__stage1-row {
-  align-items: stretch;
-  height: 100%; // 跟随父级 stage
-  min-height: 0;
+  align-items: flex-start; // 不拉伸，让内容决定高度
   > [class*='el-col'] {
-    height: 100%; // 让 el-col 高度 = row 高度
     .sxk-generate__card {
-      height: 100% !important; // 跟随 col（覆盖 inline style 的 calc）
       min-height: 0;
     }
   }
@@ -4121,31 +4068,11 @@ void renderMarkdown
   :deep(.el-card__body) {
     padding: $spacing-md;
   }
-  // 可滚动卡片：固定高度 + 内部 body 滚动（body 样式由 :body-style 传递）
+  // 卡片内容自然展开（不固定高度，页面整体滚动）
   &.is-scrollable {
-    // 让 body 内部用 flex column：版本卡墙固定 + 预览区独立滚动
     :deep(.el-card__body) {
       display: flex !important;
       flex-direction: column !important;
-      // 滚动条样式（10px 深色更醒目）
-      &::-webkit-scrollbar {
-        width: 10px;
-        background-color: rgba(0, 0, 0, 0.04);
-      }
-      &::-webkit-scrollbar-thumb {
-        background: $text-placeholder;
-        border-radius: 5px;
-        border: 2px solid transparent;
-        background-clip: padding-box;
-        &:hover {
-          background: $text-regular;
-          background-clip: padding-box;
-        }
-      }
-      &::-webkit-scrollbar-track {
-        background: rgba(0, 0, 0, 0.03);
-        border-radius: 5px;
-      }
     }
   }
   &.is-clean {
@@ -5018,21 +4945,9 @@ void renderMarkdown
   border: 1px dashed $border-light;
 }
 .sxk-generate__version-preview {
-  // 关键：去掉 fadeInUp 动画（用户要求点击卡墙时不要加载动画）
-  // 之前：animation: fadeInUp 0.25s ease;
-  // 关键：预览区独立滚动（仅此区，超出时滚动）
   flex: 1 1 0%;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  // 自定义滚动条
-  &::-webkit-scrollbar { width: 8px; }
-  &::-webkit-scrollbar-thumb {
-    background: $text-placeholder;
-    border-radius: $radius-sm;
-  }
-  &::-webkit-scrollbar-track { background: rgba(0,0,0,0.04); }
 }
+
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -5264,19 +5179,13 @@ void renderMarkdown
 .sxk-generate__edit-body {
   display: flex;
   flex-direction: column;
-  flex: 1 1 0%; // 撑满 body 剩余高度
-  min-height: 0; // flex 子项可滚动
-  // textarea 容器：固定 height（让卡片下方有留白），用户可拖拽
+  flex: 1 1 0%;
+  // textarea 自动撑开高度，完整展示所有内容
   :deep(.el-textarea) {
     flex: 0 1 auto;
     display: flex;
-    min-height: 0;
-    // 关键：固定 height（让卡片下方有留白）
-    height: 480px;
-    overflow: hidden; // 容器内部滚动
   }
   :deep(.el-textarea__inner) {
-    flex: 1 1 0%;
     font-size: $font-size-base;
     line-height: 1.9;
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Georgia, "宋体", serif;
@@ -5286,9 +5195,6 @@ void renderMarkdown
     transition: all 0.18s ease;
     border-color: transparent;
     color: $text-primary;
-    overflow-y: auto !important;
-    // 用户可拖拽改变高度（不再 !important resize none）
-    resize: vertical;
     &:hover {
       border-color: rgba(64, 158, 255, 0.4);
     }
@@ -5846,10 +5752,7 @@ void renderMarkdown
   display: flex;
   flex-direction: column;
   gap: $spacing-md;
-  // 关键：flex 撑满 + 内部独立滚动
   flex: 1 1 0%;
-  min-height: 0;
-  overflow-y: auto;
 }
 .sxk-generate__edit-title {
   :deep(.el-input-group__prepend) {

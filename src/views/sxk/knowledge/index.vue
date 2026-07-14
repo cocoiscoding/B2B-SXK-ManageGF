@@ -212,7 +212,7 @@
     <input
       ref="importFileInput"
       type="file"
-      accept=".docx,.pdf"
+      accept=".doc,.docx,.pdf"
       hidden
       @change="onImportFileChange"
     />
@@ -475,6 +475,16 @@ const onImportFileChange = async (e) => {
   const file = e.target.files?.[0]
   e.target.value = ''  // 允许同名文件重复选择
   if (!file) return
+
+  // 前端文件类型校验：仅允许 pdf / doc / docx
+  const allowedExts = ['.pdf', '.doc', '.docx']
+  const fileName = file.name.toLowerCase()
+  const isValid = allowedExts.some((ext) => fileName.endsWith(ext))
+  if (!isValid) {
+    ElMessage.warning('仅支持上传 PDF、DOC、DOCX 格式的文件')
+    return
+  }
+
   importing.value = true
   try {
     const res = await sxkApi.importDocx(file)

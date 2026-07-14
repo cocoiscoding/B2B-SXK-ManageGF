@@ -190,9 +190,25 @@ const blankForm = () => ({
 })
 const form = reactive(blankForm())
 
+// 每次弹窗打开时重新初始化（@open 只在首次渲染触发，后续打开复用实例不再触发）
+watch(
+  () => props.modelValue,
+  (val) => {
+    if (val) init()
+  }
+)
+
 const init = () => {
   if (props.templateData) {
     // 编辑模式：回填
+    // sections 可能是字符串（后端 structure，如 "主标题 -> 副标题 -> CTA"）或数组
+    const rawSections = props.templateData.sections
+    let sectionList = []
+    if (Array.isArray(rawSections)) {
+      sectionList = rawSections.map((s) => ({ value: s.title || s.value || '' }))
+    } else if (typeof rawSections === 'string' && rawSections.trim()) {
+      sectionList = rawSections.split('->').map((s) => ({ value: s.trim() })).filter((s) => s.value)
+    }
     Object.assign(form, {
       scene: props.templateData.scene_code || '',
       name: props.templateData.name || '',
@@ -200,7 +216,7 @@ const init = () => {
       format: props.templateData.output_format || 'long_text',
       desc: props.templateData.description || '',
       prompt: props.templateData.prompt || '',
-      sections: (props.templateData.sections || []).map((s) => ({ value: s.title || s.value || '' }))
+      sections: sectionList
     })
   } else {
     Object.assign(form, blankForm())
@@ -245,6 +261,7 @@ const submit = async () => {
     emit('saved', {
       scene_code: form.scene,
       name: form.name.trim(),
+      tag: form.style.trim(),
       style: form.style.trim(),
       output_format: form.format,
       description: form.desc.trim(),
